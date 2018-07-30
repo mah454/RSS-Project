@@ -1,5 +1,6 @@
 package ir.samehara.rss;
 
+import com.rometools.rome.feed.synd.SyndEntry;
 import com.rometools.rome.feed.synd.SyndFeed;
 import com.rometools.rome.io.FeedException;
 import com.rometools.rome.io.SyndFeedInput;
@@ -20,15 +21,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.stream.Stream;
 
 /*
-* smbPath=smb://w.x.y.z/hr/FILE.CSV
-* username=[USERNAME]
-* password=[PASSWORD]
-*
-* */
+ * smbPath=smb://w.x.y.z/hr/FILE.CSV
+ * username=[USERNAME]
+ * password=[PASSWORD]
+ *
+ * */
 
 
 public class MainClass {
@@ -39,7 +41,7 @@ public class MainClass {
         String password = properties.getProperty("password");
 
         NtlmPasswordAuthentication authentication = new NtlmPasswordAuthentication(username + ":" + password);
-        SmbFile smbFile = new SmbFile(smbPath,authentication);
+        SmbFile smbFile = new SmbFile(smbPath, authentication);
 
         if (smbFile.exists()) {
             smbFile.delete();
@@ -47,44 +49,49 @@ public class MainClass {
 
         Path path = Paths.get("etc/links.txt");
         Stream<String> links = getLinks(path);
-        links.forEach(e -> csvGenerator(smbFile, e));
+        String csv = csvGenerator(links);
+
+        SmbFileOutputStream smbFileOutputStream = new SmbFileOutputStream(smbFile, true);
+        smbFileOutputStream.write(csv.getBytes());
+        smbFileOutputStream.flush();
+        smbFileOutputStream.close();
     }
 
-    private static void csvGenerator(SmbFile smbFile, String url) {
-        StringBuilder result = new StringBuilder();
-        try (CloseableHttpClient client = HttpClients.createMinimal()) {
-            HttpUriRequest request = new HttpGet(url);
-            try (CloseableHttpResponse response = client.execute(request);
-                 InputStream inputStream = response.getEntity().getContent()) {
-                SyndFeedInput input = new SyndFeedInput();
-                SyndFeed feed = input.build(new XmlReader(inputStream));
-                feed.getEntries().forEach(e -> {
-                    DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
-                    String date = dateFormat.format(e.getPublishedDate());
-                    String currency = e.getCategories().get(0).getName();
-                    String value = e.getDescription().getValue();
-                    result.append("M" + ",")
-                            .append(currency)
-                            .append(",")
-                            .append("IRR")
-                            .append(",")
-                            .append(date)
-                            .append(",")
-                            .append(value).append("\n");
-                });
-            } catch (FeedException e) {
+    private static String csvGenerator(Stream<String> links) {
+        StringBuilder line = new StringBuilder();
+        links.forEach(l -> {
+            try (CloseableHttpClient client = HttpClients.createMinimal()) {
+                HttpUriRequest request = new HttpGet(l);
+                System.out.println("URL :> " + request.getURI());
+                try (CloseableHttpResponse response = client.execute(request);
+                     InputStream inputStream = response.getEntity().getContent()) {
+                    SyndFeedInput input = new SyndFeedInput();
+                    SyndFeed feed = input.build(new XmlReader(inputStream));
+                    Optional<SyndEntry> syndEntry = feed.getEntries().stream().findFirst();
+                    if (syndEntry.isPresent()) {
+                        SyndEntry s = syndEntry.get();
+
+                        DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
+                        String date = dateFormat.format(s.getPublishedDate());
+                        String currency = s.getCategories().get(0).getName();
+                        String value = s.getDescription().getValue();
+                        line.append("M" + ",")
+                                .append(currency)
+                                .append(",")
+                                .append("IRR")
+                                .append(",")
+                                .append(date)
+                                .append(",")
+                                .append(value).append("\n");
+                    }
+                } catch (FeedException e) {
+                    e.printStackTrace();
+                }
+            } catch (IOException e) {
                 e.printStackTrace();
             }
-
-            SmbFileOutputStream smbFileOutputStream = new SmbFileOutputStream(smbFile);
-            smbFileOutputStream.write(result.toString().getBytes());
-            smbFileOutputStream.flush();
-            smbFileOutputStream.close();
-
-
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        });
+        return line.toString();
     }
 
     private static Stream<String> getLinks(Path path) throws IOException {
